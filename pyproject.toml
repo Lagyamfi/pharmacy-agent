@@ -1,0 +1,12 @@
+[project]
+name = "pharmacy-agent"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "chainlit>=2.9.6",
+    "gtts>=2.5.4",
+    "logfire[sqlite3]>=4.25.0",
+    "pydantic-ai>=1.63.0",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+]
