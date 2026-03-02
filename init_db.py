@@ -27,7 +27,8 @@ def setup_database():
     cursor.execute("""
         CREATE TABLE inventory (
             product_name TEXT PRIMARY KEY,
-            stock INTEGER NOT NULL
+            stock INTEGER NOT NULL,
+            price REAL NOT NULL
         )
     """)
     
@@ -43,16 +44,16 @@ def setup_database():
     
     # 5. Insert Mock Inventory
     mock_inventory = [
-        ("ibuprofen", 150),
-        ("vitamin c", 320),
-        ("melatonin", 75),
-        ("amoxicillin", 0),
-        ("aspirin", 200),
-        ("antihistamine", 45),
-        ("cough syrup", 60),
-        ("hand sanitizer", 500)
+        ("ibuprofen", 150, 25.0),
+        ("vitamin c", 320, 40.0),
+        ("melatonin", 75, 55.0),
+        ("amoxicillin", 0, 80.0),
+        ("aspirin", 200, 20.0),
+        ("antihistamine", 45, 30.0),
+        ("cough syrup", 60, 35.0),
+        ("hand sanitizer", 500, 15.0)
     ]
-    cursor.executemany("INSERT INTO inventory VALUES (?, ?)", mock_inventory)
+    cursor.executemany("INSERT INTO inventory VALUES (?, ?, ?)", mock_inventory)
     
     # Commit the changes and close
     conn.commit()

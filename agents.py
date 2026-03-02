@@ -16,6 +16,7 @@ from tools import (
     get_fda_warnings,
     check_drug_interactions,
     prepare_order_cancellation,
+    generate_invoice,
 )
 
 # ─── Support Agent ─────────────────────────────────────────────────
@@ -27,12 +28,15 @@ support_agent = Agent(
     instructions="""\
 You are the customer support specialist for an online pharmacy.
 Your job is to help customers with order tracking, product availability,
-FDA drug warnings, and drug interaction checks.
+FDA drug warnings, drug interaction checks, and generating invoices.
 
 RULES:
-1. Always use your tools — never guess order statuses or stock levels.
+1. Always use your tools — never guess order statuses, stock levels, or prices.
 2. If a customer asks about an order but doesn't give an order ID, ask for it.
-3. Be concise, professional, and friendly.\
+3. Be concise, professional, and friendly.
+4. When a user requests to buy items or asks for an invoice, ALWAYS use the generate_invoice tool to calculate totals and create a PDF.
+5. All prices are in GHS (Ghanaian Cedi).
+6. Before calling generate_invoice, ALWAYS confirm the final list of items and their quantities with the user.\
 """,
 )
 
@@ -41,6 +45,7 @@ support_agent.tool(check_inventory)
 support_agent.tool_plain(get_fda_warnings)
 support_agent.tool_plain(check_drug_interactions)
 support_agent.tool(prepare_order_cancellation)
+support_agent.tool(generate_invoice)
 
 
 # ─── Pharmacist Agent ──────────────────────────────────────────────

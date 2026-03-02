@@ -197,3 +197,141 @@ def prepare_order_cancellation(
             "Please ask the customer to confirm using the buttons below."
         ),
     })
+
+
+def generate_invoice(
+    ctx: RunContext[PharmacyDeps], items: dict[str, int]
+) -> str:
+    """Generate a total price and a downloadable PDF invoice for requested items.
+
+    Use this when a user has decided on items to purchase and wants to 
+    see the total cost or explicitly asks for an invoice/receipt.
+
+    Args:
+        items: A dictionary of product names to integer quantities requested. 
+               e.g., {"vitamin c": 2, "ibuprofen": 1}
+
+    Returns:
+        A Markdown formatted table summarizing the invoice. 
+        The actual PDF file will be attached to the chat automatically.
+    """
+    import os
+    import tempfile
+    import datetime
+    import chainlit as cl
+    from fpdf import FPDF
+    
+    cursor = ctx.deps.db_conn.cursor()
+    
+    line_items = []
+    grand_total = 0.0
+    errors = []
+
+    for item_name, req_qty in items.items():
+        clean_name = item_name.lower().strip()
+        
+        # Check stock and price
+        cursor.execute(
+            "SELECT stock, price FROM inventory WHERE product_name = ?", 
+            (clean_name,)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            errors.append(f"Product not found: '{item_name}'")
+            continue
+            
+        stock, price = row
+        if stock < req_qty:
+            errors.append(
+                f"Cannot fulfill '{item_name}': {req_qty} requested, but only {stock} in stock."
+            )
+            continue
+            
+        line_total = price * req_qty
+        grand_total += line_total
+        line_items.append({
+            "name": item_name.title(),
+            "qty": req_qty,
+            "price": price,
+            "total": line_total
+        })
+
+    if errors and not line_items:
+        return "Invoice generation failed:\n" + "\n".join(errors)
+        
+    error_msg = ""
+    if errors:
+        error_msg = "\n**Note:** Some items could not be included:\n- " + "\n- ".join(errors) + "\n\n"
+
+    # 1. Generate Markdown Table for LLM
+    md_lines = [
+        "### Invoice Summary",
+        "| Item | Qty | Unit Price (GHS) | Total (GHS) |",
+        "|---|---|---|---|"
+    ]
+    for item in line_items:
+        md_lines.append(f"| {item['name']} | {item['qty']} | GH₵{item['price']:.2f} | GH₵{item['total']:.2f} |")
+    md_lines.append(f"| **Grand Total** | | | **GH₵{grand_total:.2f}** |")
+    
+    markdown_table = error_msg + "\n".join(md_lines)
+
+    # 2. Generate PDF using fpdf2
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header
+    pdf.set_font("helvetica", "B", 20)
+    pdf.cell(0, 15, "Pharmacy Support Invoice", new_x="LMARGIN", new_y="NEXT", align="C")
+    
+    # Date
+    pdf.set_font("helvetica", "", 12)
+    today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    pdf.cell(0, 10, f"Date: {today}", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    # Table Header
+    pdf.set_font("helvetica", "B", 12)
+    pdf.cell(70, 10, "Item")
+    pdf.cell(30, 10, "Qty", align="C")
+    pdf.cell(40, 10, "Unit Price", align="R")
+    pdf.cell(50, 10, "Total (GHS)", align="R", new_x="LMARGIN", new_y="NEXT")
+    
+    # Add a line
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(2)
+    
+    # Table Rows
+    pdf.set_font("helvetica", "", 12)
+    for item in line_items:
+        pdf.cell(70, 10, item["name"])
+        pdf.cell(30, 10, str(item["qty"]), align="C")
+        pdf.cell(40, 10, f"GHS {item['price']:.2f}", align="R")
+        pdf.cell(50, 10, f"GHS {item['total']:.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+    
+    # Add a line
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(2)
+    
+    # Grand Total
+    pdf.set_font("helvetica", "B", 14)
+    pdf.cell(140, 10, "Grand Total:", align="R")
+    pdf.cell(50, 10, f"GHS {grand_total:.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+    
+    # Save PDF to temporary file
+    temp_dir = tempfile.gettempdir()
+    pdf_path = os.path.join(temp_dir, "invoice.pdf")
+    pdf.output(pdf_path)
+
+    # 3. Inject PDF directly into UI
+    try:
+        cl.run_sync(
+            cl.Message(
+                content="🧾 *Invoice generated automatically.*",
+                elements=[cl.File(name="Invoice.pdf", path=pdf_path, display="inline")]
+            ).send()
+        )
+    except Exception as e:
+        print(f"Failed to inject invoice PDF into UI: {e}")
+
+    return markdown_table

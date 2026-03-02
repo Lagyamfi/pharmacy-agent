@@ -1,5 +1,11 @@
 # 💊 Pharmacy Support Agent
 
+![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)
+![Pydantic AI](https://img.shields.io/badge/Framework-Pydantic_AI-FF4B4B.svg)
+![Chainlit](https://img.shields.io/badge/UI-Chainlit-F9A826.svg)
+![Gemini 2.5](https://img.shields.io/badge/LLM-Gemini_2.5_Flash-8E75B2.svg)
+![Logfire](https://img.shields.io/badge/Observability-Logfire-000000.svg)
+
 An AI-powered **multi-agent** customer support chatbot for an online pharmacy. Features intelligent query routing, streaming responses, interactive quick-actions, a secure **Text-to-SQL admin mode**, and **voice input/output** — built with pydantic-ai and Chainlit.
 
 ![Pharmacy Support Agent Demo](docs/demo.png)
@@ -28,6 +34,7 @@ An AI-powered **multi-agent** customer support chatbot for an online pharmacy. F
 - **FDA Drug Warnings** — Fetch official FDA boxed warnings for specific medications
 - **Medical Safety Guardrails** — Declines medical advice requests and directs users to healthcare professionals
 - **Voice Mode** — Speak questions via microphone (Whisper STT) and hear answers read aloud (gTTS)
+- **Automated Invoicing** — Dynamically calculates totals (in GHS) and generates a downloadable PDF attached inline to the chat
 - **SQL Safety Guardrails** — Admin queries restricted to SELECT-only, blocking all write operations
 - **Observability** — Full tracing of agent runs, tool calls, and SQLite queries via Logfire
 
@@ -123,6 +130,8 @@ Traces will appear at your [Logfire dashboard](https://logfire.pydantic.dev/).
 | `check_inventory` | `product_name` | SQLite | Returns current stock level |
 | `get_fda_warnings` | `drug_name` | openFDA API | Returns FDA boxed warnings |
 | `check_drug_interactions` | `drug_name_1`, `drug_name_2` | openFDA API | Returns interaction info for both drugs |
+| `prepare_order_cancellation` | `order_id` | SQLite | Stages an order for HITL cancellation |
+| `generate_invoice` | `items` | Python / `fpdf2` | Returns a Markdown summary and generates a PDF invoice |
 | `execute_sql_query` | `sql_query` | SQLite | Executes read-only SQL (Admin mode only) |
 
 ## Mock Data
