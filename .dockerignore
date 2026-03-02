@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.idea/
+.vscode/
+.git/
+.logfire/
+pharmacy.db
+# Ignore chainlit local data if any
+.chainlit/
