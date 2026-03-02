@@ -33,4 +33,4 @@ EXPOSE 8000
 # The Startup Command: 
 # 1. Rebuilds the SQLite database so fresh mock data is always there
 # 2. Starts Chainlit, binding it to 0.0.0.0 so the internet can reach it
-CMD python init_db.py && chainlit run app.py -h 0.0.0.0 -p ${PORT:-8000}
+CMD python init_db.py && chainlit run app.py -h --host 0.0.0.0 --port ${PORT:-8000}
