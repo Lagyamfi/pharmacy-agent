@@ -174,7 +174,11 @@ async def process_query(text: str, generate_audio: bool = False) -> str:
     """
     message_history = cl.user_session.get("agent_message_history", [])
     db_conn = cl.user_session.get("db_conn")
-    deps = PharmacyDeps(db_conn=db_conn)
+    deps = PharmacyDeps(
+        db_conn=db_conn,
+        support_history=cl.user_session.get("support_history", []),
+        pharmacist_history=cl.user_session.get("pharmacist_history", []),
+    )
     persona = cl.user_session.get("persona", "customer")
 
     # Pick the right agent
@@ -193,8 +197,10 @@ async def process_query(text: str, generate_audio: bool = False) -> str:
         async for chunk in result.stream_text(delta=True):
             await msg.stream_token(chunk)
 
-        # Persist updated message history
+        # Persist updated message histories
         cl.user_session.set("agent_message_history", result.all_messages())
+        cl.user_session.set("support_history", deps.support_history)
+        cl.user_session.set("pharmacist_history", deps.pharmacist_history)
 
     # Check for pending cancellation in the response
     pending_order_id = _extract_cancellation_order_id(msg.content)
@@ -330,6 +336,8 @@ async def on_settings_update(settings):
     if "Admin" in selection:
         cl.user_session.set("persona", "admin")
         cl.user_session.set("agent_message_history", [])
+        cl.user_session.set("support_history", [])
+        cl.user_session.set("pharmacist_history", [])
         await cl.Message(
             content="🔍 **Switched to Admin Analyst mode.**\n\n"
             "You can now ask analytical questions about the database. "
@@ -339,6 +347,8 @@ async def on_settings_update(settings):
     else:
         cl.user_session.set("persona", "customer")
         cl.user_session.set("agent_message_history", [])
+        cl.user_session.set("support_history", [])
+        cl.user_session.set("pharmacist_history", [])
         await cl.Message(
             content="💊 **Switched to Customer Support mode.**\n\n"
             "Ask about your orders, product availability, or general pharmacy questions."

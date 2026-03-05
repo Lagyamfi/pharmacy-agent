@@ -20,6 +20,14 @@ from pydantic_ai import RunContext
 @dataclass
 class PharmacyDeps:
     db_conn: sqlite3.Connection
+    support_history: list = None
+    pharmacist_history: list = None
+
+    def __post_init__(self):
+        if self.support_history is None:
+            self.support_history = []
+        if self.pharmacist_history is None:
+            self.pharmacist_history = []
 
 
 # 2. Update to require ctx: RunContext[PharmacyDeps]

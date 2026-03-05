@@ -127,25 +127,33 @@ async def ask_support_agent(
     Args:
         customer_query: The customer's full question, forwarded as-is.
     """
+    history = ctx.deps.support_history
     result = await support_agent.run(
         customer_query,
         deps=ctx.deps,
         usage=ctx.usage,
+        message_history=history or None,
     )
+    ctx.deps.support_history = result.all_messages()
     return result.output
 
 
-@triage_agent.tool_plain
-async def ask_pharmacist_agent(customer_query: str) -> str:
+@triage_agent.tool
+async def ask_pharmacist_agent(
+    ctx: RunContext[PharmacyDeps], customer_query: str
+) -> str:
     """Route to the pharmacist agent for medication information,
     drug education, and general wellness questions.
 
     Args:
         customer_query: The customer's full question, forwarded as-is.
     """
+    history = ctx.deps.pharmacist_history
     result = await pharmacist_agent.run(
         customer_query,
+        message_history=history or None,
     )
+    ctx.deps.pharmacist_history = result.all_messages()
     return result.output
 
 
