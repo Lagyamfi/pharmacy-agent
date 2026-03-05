@@ -1,17 +1,94 @@
 """Database initialisation script for the Pharmacy Support Agent.
 
-Creates the SQLite database schema and seeds it with realistic pharmacy data.
+Creates the SQLite database schema and seeds inventory from the real product
+dataset (data/Products_Database_Clean.xlsx). Orders are generated synthetically.
 Safe to re-run — existing tables are dropped and recreated on each execution.
 """
 
 import json
 import random
+import re
 import sqlite3
 from datetime import date, timedelta
+
+import pandas as pd
 
 BASE_DATE = date(2026, 3, 5)
 random.seed(42)
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _atc_to_category(atc_string: str) -> str:
+    """Map a full ATC classification string to a simplified category label."""
+    s = atc_string.upper()
+    if "J01" in s:
+        return "Antibiotic"
+    if "P01B" in s:
+        return "Antimalarial"
+    if "P01" in s:
+        return "Antiprotozoal"
+    if "M01" in s:
+        return "Anti-Inflammatory"
+    if "N02A" in s:
+        return "Opioid Analgesic"
+    if "N02" in s:
+        return "Analgesic"
+    if "N05" in s:
+        return "Psycholeptic"
+    if "H02" in s:
+        return "Corticosteroid"
+    if "D01" in s:
+        return "Antifungal"
+    if "R06" in s:
+        return "Antihistamine"
+    if "R03" in s or "R05" in s:
+        return "Respiratory"
+    if "B03" in s and "A11" not in s:
+        return "Antianemic"
+    if "A11" in s:
+        return "Vitamin/Supplement"
+    if "A02" in s:
+        return "Antacid/GI"
+    if "V06" in s:
+        return "Nutritional Supplement"
+    m = re.match(r"([A-Z])", s)
+    return f"Other ({m.group(1)})" if m else "Other"
+
+
+def _parse_schedule(schedule: str) -> tuple[int, int]:
+    """Return (requires_prescription, is_controlled) from medicine schedule string."""
+    if "Controlled Drug" in schedule:
+        return 1, 1
+    if "Prescription Only" in schedule:
+        return 1, 0
+    return 0, 0
+
+
+def _extract_dosage_form(route: str) -> str:
+    """Extract dosage form from 'Oral (Enteral), Tablet' → 'Tablet'."""
+    if "," in route:
+        return route.split(",")[-1].strip()
+    return route.strip()
+
+
+def _build_dosage(row: pd.Series) -> str | None:
+    """Combine Dosage Unit and Volume into a single dosage string."""
+    dosage_unit = row.get("Dosage Unit")
+    volume = row.get("Volume")
+    has_unit = pd.notna(dosage_unit) and str(dosage_unit).strip()
+    has_volume = pd.notna(volume) and str(volume).strip()
+
+    if has_unit and has_volume:
+        return f"{str(dosage_unit).strip()} / {str(volume).strip()}"
+    if has_unit:
+        return str(dosage_unit).strip()
+    if has_volume:
+        return str(volume).strip()
+    return None
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def setup_database():
     """Create and seed the pharmacy SQLite database."""
@@ -23,14 +100,23 @@ def setup_database():
     cursor.execute("DROP TABLE IF EXISTS orders")
     cursor.execute("DROP TABLE IF EXISTS inventory")
 
+    # ── Schema ────────────────────────────────────────────────────────────────
     cursor.execute("""
         CREATE TABLE inventory (
             product_name          TEXT PRIMARY KEY,
-            dosage                TEXT NOT NULL,
+            internal_reference    TEXT,
+            brand                 TEXT,
+            active_ingredients    TEXT NOT NULL,
+            dosage                TEXT,
+            dosage_form           TEXT NOT NULL,
             category              TEXT NOT NULL,
+            atc_code              TEXT NOT NULL,
             requires_prescription INTEGER NOT NULL DEFAULT 0,
+            is_controlled         INTEGER NOT NULL DEFAULT 0,
             stock                 INTEGER NOT NULL,
-            price                 REAL NOT NULL
+            unit                  TEXT NOT NULL,
+            price                 REAL NOT NULL,
+            cost                  REAL NOT NULL
         )
     """)
 
@@ -44,183 +130,82 @@ def setup_database():
         )
     """)
 
-    # ── Inventory ─────────────────────────────────────────────────────────────
-    # (product_name, dosage, category, requires_prescription, stock, price_GHS)
-    inventory = [
-        # Analgesics ────────────────────────────────────────────────────────────
-        ("paracetamol",             "500mg tablet",          "Analgesic",          0, 500,  15.0),
-        ("ibuprofen",               "200mg tablet",          "Analgesic",          0, 150,  25.0),
-        ("ibuprofen 400mg",         "400mg tablet",          "Analgesic",          0, 120,  30.0),
-        ("aspirin",                 "100mg tablet",          "Analgesic",          0, 300,  20.0),
-        ("diclofenac",              "50mg tablet",           "Analgesic",          1,  80,  35.0),
-        ("naproxen",                "250mg tablet",          "Analgesic",          1,  60,  40.0),
-        ("tramadol",                "50mg capsule",          "Analgesic",          1,  45,  50.0),
-        ("mefenamic acid",          "250mg capsule",         "Analgesic",          1,  70,  45.0),
-        ("piroxicam",               "20mg capsule",          "Analgesic",          1,  30,  45.0),
-        # Antibiotics ───────────────────────────────────────────────────────────
-        ("amoxicillin",             "500mg capsule",         "Antibiotic",         1,   0,  80.0),
-        ("amoxicillin 250mg",       "250mg capsule",         "Antibiotic",         1,  90,  65.0),
-        ("amoxiclav",               "625mg tablet",          "Antibiotic",         1,  55, 120.0),
-        ("ciprofloxacin",           "500mg tablet",          "Antibiotic",         1,  65,  90.0),
-        ("erythromycin",            "500mg tablet",          "Antibiotic",         1,  40,  85.0),
-        ("metronidazole",           "400mg tablet",          "Antibiotic",         1, 100,  55.0),
-        ("doxycycline",             "100mg capsule",         "Antibiotic",         1,  50,  70.0),
-        ("cotrimoxazole",           "480mg tablet",          "Antibiotic",         1,  75,  45.0),
-        ("azithromycin",            "500mg tablet",          "Antibiotic",         1,  30, 130.0),
-        ("clindamycin",             "300mg capsule",         "Antibiotic",         1,  25, 110.0),
-        ("cephalexin",              "500mg capsule",         "Antibiotic",         1,  35,  95.0),
-        ("tetracycline",            "250mg capsule",         "Antibiotic",         1,  20,  60.0),
-        ("ampicillin",              "500mg capsule",         "Antibiotic",         1,  45,  75.0),
-        ("gentamicin injection",    "80mg/2ml injection",    "Antibiotic",         1,  15, 180.0),
-        # Antimalarials ─────────────────────────────────────────────────────────
-        ("artemether lumefantrine", "20/120mg tablet",       "Antimalarial",       1,  80, 150.0),
-        ("artesunate",              "50mg tablet",           "Antimalarial",       1,  60, 120.0),
-        ("quinine",                 "300mg tablet",          "Antimalarial",       1,  40,  95.0),
-        ("chloroquine",             "150mg tablet",          "Antimalarial",       0, 100,  40.0),
-        ("fansidar",                "500/25mg tablet",       "Antimalarial",       1,  55,  85.0),
-        ("amodiaquine",             "200mg tablet",          "Antimalarial",       1,  70,  75.0),
-        # Antihypertensives ─────────────────────────────────────────────────────
-        ("amlodipine",              "5mg tablet",            "Antihypertensive",   1, 120,  60.0),
-        ("amlodipine 10mg",         "10mg tablet",           "Antihypertensive",   1,  85,  75.0),
-        ("lisinopril",              "10mg tablet",           "Antihypertensive",   1,  90,  65.0),
-        ("atenolol",                "50mg tablet",           "Antihypertensive",   1,  75,  55.0),
-        ("hydrochlorothiazide",     "25mg tablet",           "Antihypertensive",   1, 110,  45.0),
-        ("methyldopa",              "250mg tablet",          "Antihypertensive",   1,  50,  70.0),
-        ("enalapril",               "10mg tablet",           "Antihypertensive",   1,  65,  60.0),
-        ("nifedipine",              "10mg tablet",           "Antihypertensive",   1,  80,  55.0),
-        ("losartan",                "50mg tablet",           "Antihypertensive",   1,  45,  80.0),
-        ("furosemide",              "40mg tablet",           "Antihypertensive",   1,  95,  40.0),
-        ("spironolactone",          "25mg tablet",           "Antihypertensive",   1,  35,  65.0),
-        # Vitamins / Supplements ────────────────────────────────────────────────
-        ("vitamin c 500mg",         "500mg tablet",          "Vitamin/Supplement", 0, 320,  40.0),
-        ("vitamin c 1000mg",        "1000mg tablet",         "Vitamin/Supplement", 0, 200,  55.0),
-        ("vitamin b complex",       "tablet",                "Vitamin/Supplement", 0, 250,  35.0),
-        ("vitamin d3",              "1000IU capsule",        "Vitamin/Supplement", 0, 180,  50.0),
-        ("folic acid",              "5mg tablet",            "Vitamin/Supplement", 0, 300,  20.0),
-        ("ferrous sulphate",        "200mg tablet",          "Vitamin/Supplement", 0, 150,  25.0),
-        ("zinc sulphate",           "20mg tablet",           "Vitamin/Supplement", 0, 200,  30.0),
-        ("calcium carbonate",       "500mg tablet",          "Vitamin/Supplement", 0, 175,  35.0),
-        ("multivitamin",            "tablet",                "Vitamin/Supplement", 0, 400,  45.0),
-        ("cod liver oil",           "capsule",               "Vitamin/Supplement", 0, 220,  40.0),
-        # Antacids / GI ─────────────────────────────────────────────────────────
-        ("omeprazole",              "20mg capsule",          "Antacid/GI",         0, 130,  55.0),
-        ("omeprazole 40mg",         "40mg capsule",          "Antacid/GI",         1,  90,  70.0),
-        ("ranitidine",              "150mg tablet",          "Antacid/GI",         0, 100,  45.0),
-        ("metoclopramide",          "10mg tablet",           "Antacid/GI",         0,  80,  30.0),
-        ("loperamide",              "2mg capsule",           "Antacid/GI",         0,  70,  35.0),
-        ("oral rehydration salts",  "sachet",                "Antacid/GI",         0, 500,  10.0),
-        ("bisacodyl",               "5mg tablet",            "Antacid/GI",         0,  90,  25.0),
-        ("antacid",                 "400mg tablet",          "Antacid/GI",         0, 150,  20.0),
-        ("domperidone",             "10mg tablet",           "Antacid/GI",         0,  85,  35.0),
-        # Respiratory ───────────────────────────────────────────────────────────
-        ("salbutamol",              "2mg tablet",            "Respiratory",        1,  85,  35.0),
-        ("salbutamol inhaler",      "100mcg/dose inhaler",   "Respiratory",        1,  45, 120.0),
-        ("ambroxol",                "30mg tablet",           "Respiratory",        0, 100,  30.0),
-        ("bromhexine",              "8mg tablet",            "Respiratory",        0,  75,  25.0),
-        ("cough syrup",             "100ml syrup",           "Respiratory",        0,  60,  35.0),
-        ("loratadine",              "10mg tablet",           "Respiratory",        0, 110,  30.0),
-        ("cetirizine",              "10mg tablet",           "Respiratory",        0, 120,  30.0),
-        ("chlorpheniramine",        "4mg tablet",            "Respiratory",        0, 200,  20.0),
-        ("beclomethasone inhaler",  "50mcg/dose inhaler",    "Respiratory",        1,  30, 150.0),
-        ("theophylline",            "200mg tablet",          "Respiratory",        1,  25,  50.0),
-        # Antidiabetics ─────────────────────────────────────────────────────────
-        ("metformin",               "500mg tablet",          "Antidiabetic",       1, 100,  50.0),
-        ("metformin 1000mg",        "1000mg tablet",         "Antidiabetic",       1,  65,  70.0),
-        ("glibenclamide",           "5mg tablet",            "Antidiabetic",       1,  75,  45.0),
-        ("glimepiride",             "2mg tablet",            "Antidiabetic",       1,  40,  80.0),
-        # Dermatology ───────────────────────────────────────────────────────────
-        ("hydrocortisone cream",    "1% cream 30g",          "Dermatology",        0,  90,  30.0),
-        ("betamethasone cream",     "0.1% cream 30g",        "Dermatology",        1,  55,  45.0),
-        ("clotrimazole cream",      "1% cream 30g",          "Dermatology",        0,  70,  35.0),
-        ("calamine lotion",         "100ml lotion",          "Dermatology",        0,  80,  25.0),
-        ("whitfield ointment",      "30g ointment",          "Dermatology",        0,  60,  20.0),
-        ("miconazole cream",        "2% cream 30g",          "Dermatology",        0,  65,  40.0),
-        ("permethrin cream",        "5% cream 30g",          "Dermatology",        0,  35,  55.0),
-        # Antifungals ───────────────────────────────────────────────────────────
-        ("fluconazole",             "150mg capsule",         "Antifungal",         1,  40,  80.0),
-        ("ketoconazole",            "200mg tablet",          "Antifungal",         1,  35,  70.0),
-        ("griseofulvin",            "125mg tablet",          "Antifungal",         1,  25,  55.0),
-        # Ophthalmic / Otic ─────────────────────────────────────────────────────
-        ("gentamicin eye drops",    "0.3% 5ml eye drops",   "Ophthalmic",         1,  50,  40.0),
-        ("chloramphenicol eye drops","0.5% 5ml eye drops",  "Ophthalmic",         0,  45,  35.0),
-        ("artificial tears",        "5ml eye drops",         "Ophthalmic",         0,  80,  25.0),
-        ("ear drops",               "10ml ear drops",        "Otic",               0,  60,  30.0),
-        # Other ─────────────────────────────────────────────────────────────────
-        ("prednisolone",            "5mg tablet",            "Corticosteroid",     1,  90,  30.0),
-        ("dexamethasone",           "0.5mg tablet",          "Corticosteroid",     1,  70,  35.0),
-        ("digoxin",                 "0.25mg tablet",         "Cardiac",            1,  40,  45.0),
-        ("albendazole",             "400mg tablet",          "Antiparasitic",      0, 120,  35.0),
-        ("mebendazole",             "100mg tablet",          "Antiparasitic",      0, 150,  25.0),
-        ("piperazine",              "500mg tablet",          "Antiparasitic",      0,  80,  20.0),
-        ("melatonin",               "5mg tablet",            "Sleep Aid",          0,  75,  55.0),
-        ("antihistamine",           "10mg tablet",           "Antihistamine",      0,  45,  30.0),
-        ("hand sanitizer",          "500ml gel",             "Hygiene",            0, 500,  15.0),
-        ("surgical spirit",         "500ml",                 "Hygiene",            0, 300,  12.0),
-        ("cotton wool",             "100g roll",             "Supplies",           0, 400,   8.0),
-        ("bandage",                 "5cm x 4m roll",         "Supplies",           0, 250,  10.0),
-        ("plaster strips",          "box of 20",             "Supplies",           0, 350,  15.0),
-    ]
+    # ── Inventory — loaded from Excel ─────────────────────────────────────────
+    df = pd.read_excel("data/Products_Database_Clean.xlsx")
 
-    cursor.executemany("INSERT INTO inventory VALUES (?, ?, ?, ?, ?, ?)", inventory)
+    inventory_rows = []
+    for _, row in df.iterrows():
+        product_name = str(row["Name"]).strip().lower()
+        internal_ref = (
+            str(row["Internal Reference"]).strip()
+            if pd.notna(row["Internal Reference"])
+            else None
+        )
+        brand = str(row["Brand"]).strip() if pd.notna(row["Brand"]) else None
+        active_ingredients = str(row["Active Ingredients"]).strip()
+        dosage = _build_dosage(row)
+        dosage_form = _extract_dosage_form(str(row["Route of Administration"]).strip())
+        atc_code = str(row["Therapeutic Classification"]).strip()
+        category = _atc_to_category(atc_code)
+        requires_prescription, is_controlled = _parse_schedule(
+            str(row["Medicine Schedule"]).strip()
+        )
+        stock = int(row["Qty On Hand"])
+        unit = str(row["Unit"]).strip()
+        price = float(row["Sales Price"])
+        cost = float(row["Cost"])
 
-    # ── Orders ────────────────────────────────────────────────────────────────
+        inventory_rows.append((
+            product_name,
+            internal_ref,
+            brand,
+            active_ingredients,
+            dosage,
+            dosage_form,
+            category,
+            atc_code,
+            requires_prescription,
+            is_controlled,
+            stock,
+            unit,
+            price,
+            cost,
+        ))
+
+    cursor.executemany(
+        "INSERT INTO inventory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        inventory_rows,
+    )
+
+    # ── Orders — synthetic ────────────────────────────────────────────────────
     CUSTOMERS = [
         "Kwame Asante",     "Ama Boateng",      "Kofi Mensah",      "Abena Owusu",
         "Kweku Darko",      "Akosua Amoah",     "Yaw Appiah",       "Adwoa Frimpong",
-        "Fiifi Quaye",      "Efua Aidoo",       "Nana Kwarteng",    "Esi Tetteh",
+        "Fiifi Quaye",      "Efua Aidoo",        "Nana Kwarteng",    "Esi Tetteh",
         "Kwabena Ofori",    "Abena Sarpong",    "Kofi Boakye",      "Akua Amponsah",
-        "Kojo Asare",       "Ama Kyei",         "Kwame Osei",       "Adjoa Dankwa",
+        "Kojo Asare",       "Ama Kyei",          "Kwame Osei",       "Adjoa Dankwa",
         "Yaw Darko",        "Akua Mensah",      "Kwabena Agyei",    "Abena Adjei",
-        "Kofi Amoah",       "Esi Bonsu",        "Kweku Acheampong", "Adwoa Opoku",
+        "Kofi Amoah",       "Esi Bonsu",         "Kweku Acheampong", "Adwoa Opoku",
         "Nana Asante",      "Efua Boateng",
     ]
 
     ITEM_POOLS = [
-        ["Paracetamol 500mg x30"],
-        ["Ibuprofen 200mg x30"],
-        ["Aspirin 100mg x50"],
-        ["Amoxicillin 250mg x21"],
-        ["Ciprofloxacin 500mg x10"],
-        ["Metronidazole 400mg x21"],
-        ["Artemether Lumefantrine 20/120mg x24"],
-        ["Artesunate 50mg x12"],
-        ["Quinine 300mg x21"],
-        ["Metformin 500mg x60"],
-        ["Amlodipine 5mg x30"],
-        ["Lisinopril 10mg x30"],
-        ["Vitamin C 500mg x60"],
-        ["Vitamin B Complex x30"],
-        ["Folic Acid 5mg x90"],
-        ["Ferrous Sulphate 200mg x60"],
-        ["Omeprazole 20mg x30"],
-        ["Salbutamol Inhaler x1"],
-        ["Fluconazole 150mg x3"],
-        ["Prednisolone 5mg x30"],
-        ["Albendazole 400mg x2"],
-        ["Mebendazole 100mg x6"],
-        ["Azithromycin 500mg x3"],
-        ["Loratadine 10mg x14"],
-        ["Multivitamin x60"],
-        ["Ibuprofen 200mg x30", "Omeprazole 20mg x30"],
-        ["Amoxicillin 250mg x21", "Metronidazole 400mg x21", "Paracetamol 500mg x30"],
-        ["Amlodipine 5mg x30", "Lisinopril 10mg x30"],
-        ["Metformin 500mg x60", "Glibenclamide 5mg x30"],
-        ["Vitamin C 500mg x60", "Vitamin B Complex x30", "Zinc Sulphate 20mg x30"],
-        ["Artemether Lumefantrine 20/120mg x24", "Oral Rehydration Salts x5", "Paracetamol 500mg x20"],
-        ["Ibuprofen 400mg x30", "Cough Syrup 100ml x2"],
-        ["Cetirizine 10mg x14", "Ambroxol 30mg x14"],
-        ["Doxycycline 100mg x14", "Metronidazole 400mg x14"],
-        ["Calcium Carbonate 500mg x60", "Vitamin D3 1000IU x30", "Folic Acid 5mg x90"],
-        ["Hand Sanitizer 500ml x2", "Cotton Wool 100g x1"],
-        ["Bandage 5cm x 4m x3", "Plaster Strips x2", "Surgical Spirit 500ml x1"],
-        ["Chloramphenicol Eye Drops x2", "Artificial Tears x1"],
-        ["Betamethasone Cream x2", "Clotrimazole Cream x1"],
-        ["Fansidar 500/25mg x3", "Paracetamol 500mg x20"],
-        ["Cotrimoxazole 480mg x14", "Vitamin C 500mg x30"],
-        ["Atenolol 50mg x30", "Hydrochlorothiazide 25mg x30"],
-        ["Cod Liver Oil x30", "Multivitamin x30", "Calcium Carbonate 500mg x60"],
-        ["Domperidone 10mg x14", "Omeprazole 20mg x14"],
-        ["Chlorpheniramine 4mg x20", "Bromhexine 8mg x14", "Paracetamol 500mg x20"],
+        ["Co-Trimoxazole Tab (Loose) x14"],
+        ["Chloramphenicol Caps x10"],
+        ["Vitamin B-Complex Tabs (Loose) x30"],
+        ["Ampicillin Caps x21"],
+        ["Amciclox Caps x14"],
+        ["Vitamin C Tabs x60"],
+        ["Artemether/Lumefantrine Tab x24"],
+        ["Erythromycin Tabs x14"],
+        ["Folic Acid Tabs x90"],
+        ["Doxycycline Caps x14"],
+        ["Co-Trimoxazole Tab (Loose) x14", "Vitamin C Tabs x30"],
+        ["Ampicillin Caps x21", "Vitamin B-Complex Tabs (Loose) x30"],
+        ["Chloramphenicol Caps x10", "Folic Acid Tabs x30"],
+        ["Artemether/Lumefantrine Tab x24", "Vitamin C Tabs x30"],
+        ["Amciclox Caps x14", "Doxycycline Caps x14"],
+        ["Erythromycin Tabs x10", "Co-Trimoxazole Tab (Loose) x14"],
     ]
 
     statuses = (
@@ -252,7 +237,7 @@ def setup_database():
 
     conn.commit()
     conn.close()
-    print(f"✅ Database seeded: {len(inventory)} inventory items, {len(orders)} orders.")
+    print(f"✅ Database seeded: {len(inventory_rows)} inventory items, {len(orders)} orders.")
 
 
 if __name__ == "__main__":

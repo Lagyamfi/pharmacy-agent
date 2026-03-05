@@ -161,17 +161,26 @@ TABLE: orders
   - items             TEXT NOT NULL      (JSON array of item strings)
 
 TABLE: inventory
-  - product_name          TEXT PRIMARY KEY   (lowercase, e.g. "ibuprofen")
-  - dosage                TEXT NOT NULL      (e.g. "500mg tablet", "100ml syrup")
-  - category              TEXT NOT NULL      (e.g. "Analgesic", "Antibiotic", "Antimalarial",
-                                              "Antihypertensive", "Vitamin/Supplement",
-                                              "Antacid/GI", "Respiratory", "Antidiabetic",
-                                              "Dermatology", "Antifungal", "Ophthalmic",
-                                              "Corticosteroid", "Cardiac", "Antiparasitic",
-                                              "Sleep Aid", "Antihistamine", "Hygiene", "Supplies")
+  - product_name          TEXT PRIMARY KEY   (lowercase product name, e.g. "ampicillin caps")
+  - internal_reference    TEXT               (SKU/ref code, nullable)
+  - brand                 TEXT               (brand name, nullable, e.g. "Letap")
+  - active_ingredients    TEXT NOT NULL      (e.g. "Ampicillin", "Trimethoprim, Sulfamethoxazole")
+  - dosage                TEXT               (e.g. "250mg", "125mg/5ml"; nullable for some liquids)
+  - dosage_form           TEXT NOT NULL      (e.g. "Tablet", "Capsule", "Suspension", "Syrup")
+  - category              TEXT NOT NULL      (simplified label, e.g. "Antibiotic", "Antimalarial",
+                                              "Anti-Inflammatory", "Analgesic", "Opioid Analgesic",
+                                              "Vitamin/Supplement", "Antacid/GI", "Respiratory",
+                                              "Antihistamine", "Antianemic", "Corticosteroid",
+                                              "Antifungal", "Psycholeptic", "Antiprotozoal",
+                                              "Nutritional Supplement")
+  - atc_code              TEXT NOT NULL      (full ATC classification string, e.g.
+                                              "J01 Antibacterials For Systemic Use, J01CA - ...")
   - requires_prescription INTEGER NOT NULL   (1 = prescription required, 0 = OTC)
+  - is_controlled         INTEGER NOT NULL   (1 = controlled drug, 0 = not controlled)
   - stock                 INTEGER NOT NULL   (0 = out of stock)
-  - price                 REAL NOT NULL      (price in GHS)
+  - unit                  TEXT NOT NULL      (pack unit, e.g. "Blister(s)", "Bx", "Btl(s)")
+  - price                 REAL NOT NULL      (sales price in GHS)
+  - cost                  REAL NOT NULL      (cost price in GHS)
 """
 
 # Regex to detect non-SELECT statements

@@ -80,7 +80,11 @@ def check_inventory(ctx: RunContext[PharmacyDeps], product_name: str) -> str:
     
     # Securely query the SQLite database
     cursor.execute(
-        "SELECT stock, dosage, category, requires_prescription FROM inventory WHERE product_name = ?",
+        """
+        SELECT stock, dosage, dosage_form, category, active_ingredients,
+               requires_prescription, is_controlled
+        FROM inventory WHERE product_name = ?
+        """,
         (name,),
     )
     result = cursor.fetchone()
@@ -91,18 +95,25 @@ def check_inventory(ctx: RunContext[PharmacyDeps], product_name: str) -> str:
             "Please check the product name and try again."
         )
 
-    stock, dosage, category, requires_prescription = result
+    stock, dosage, dosage_form, category, active_ingredients, requires_prescription, is_controlled = result
     if stock == 0:
         return f"{product_name.title()} is currently out of stock."
 
+    dosage_str = f"{dosage} " if dosage else ""
     rx_line = (
         "⚠️ PRESCRIPTION REQUIRED — a valid prescription must be presented before dispensing."
         if requires_prescription
         else "OTC (no prescription required)"
     )
+    controlled_line = (
+        "\n⛔ CONTROLLED DRUG — special regulatory requirements apply."
+        if is_controlled
+        else ""
+    )
     return (
         f"{product_name.title()} is in stock — {stock} units available.\n"
-        f"Dosage: {dosage} | Category: {category} | {rx_line}"
+        f"Active Ingredients: {active_ingredients} | {dosage_str}{dosage_form} | "
+        f"Category: {category} | {rx_line}{controlled_line}"
     )
 
 
@@ -236,13 +247,14 @@ def search_inventory(ctx: RunContext[PharmacyDeps], query: str) -> str:
     cursor = ctx.deps.db_conn.cursor()
     cursor.execute(
         """
-        SELECT product_name, dosage, category, requires_prescription, stock, price
+        SELECT product_name, active_ingredients, dosage, dosage_form,
+               category, requires_prescription, is_controlled, stock, price
         FROM inventory
-        WHERE product_name LIKE ?
+        WHERE product_name LIKE ? OR active_ingredients LIKE ?
         ORDER BY stock DESC
         LIMIT 6
         """,
-        (f"%{query.lower()}%",),
+        (f"%{query.lower()}%", f"%{query.lower()}%"),
     )
     rows = cursor.fetchall()
 
@@ -253,12 +265,15 @@ def search_inventory(ctx: RunContext[PharmacyDeps], query: str) -> str:
         )
 
     lines = [f"Search results for '{query}':"]
-    for name, dosage, category, rx, stock, price in rows:
-        rx_flag = "Rx required" if rx else "OTC"
+    for name, active_ingredients, dosage, dosage_form, category, rx, controlled, stock, price in rows:
+        rx_flag = "⚠️ Rx" if rx else "OTC"
+        if controlled:
+            rx_flag += " (Controlled)"
+        dosage_str = f"{dosage} " if dosage else ""
         stock_str = f"{stock} units" if stock > 0 else "OUT OF STOCK"
         lines.append(
-            f"• {name.title()} | {dosage} | {category} | {rx_flag} | "
-            f"{stock_str} | GH\u20b5{price:.2f}"
+            f"• {name.title()} | {active_ingredients} | {dosage_str}{dosage_form} | "
+            f"{category} | {rx_flag} | {stock_str} | GH\u20b5{price:.2f}"
         )
     return "\n".join(lines)
 
@@ -278,7 +293,8 @@ def get_drugs_by_category(ctx: RunContext[PharmacyDeps], category: str) -> str:
     cursor = ctx.deps.db_conn.cursor()
     cursor.execute(
         """
-        SELECT product_name, dosage, requires_prescription, stock, price
+        SELECT product_name, active_ingredients, dosage, dosage_form,
+               requires_prescription, is_controlled, stock, price
         FROM inventory
         WHERE LOWER(category) = LOWER(?)
         ORDER BY stock DESC
@@ -295,22 +311,25 @@ def get_drugs_by_category(ctx: RunContext[PharmacyDeps], category: str) -> str:
             f"Available categories: {', '.join(categories)}."
         )
 
-    in_stock = [(n, d, rx, s, p) for n, d, rx, s, p in rows if s > 0]
-    out_of_stock = [(n, d, rx, s, p) for n, d, rx, s, p in rows if s == 0]
+    in_stock = [r for r in rows if r[6] > 0]
+    out_of_stock = [r for r in rows if r[6] == 0]
 
     lines = [f"Products in '{category}' category:"]
     if in_stock:
         lines.append("\n**In Stock:**")
-        for name, dosage, rx, stock, price in in_stock:
-            rx_flag = "Rx required" if rx else "OTC"
+        for name, active_ingredients, dosage, dosage_form, rx, controlled, stock, price in in_stock:
+            rx_flag = "⚠️ Rx (Controlled)" if controlled else ("⚠️ Rx" if rx else "OTC")
+            dosage_str = f"{dosage} " if dosage else ""
             lines.append(
-                f"• {name.title()} | {dosage} | {rx_flag} | {stock} units | GH\u20b5{price:.2f}"
+                f"• {name.title()} | {active_ingredients} | {dosage_str}{dosage_form} | "
+                f"{rx_flag} | {stock} units | GH\u20b5{price:.2f}"
             )
     if out_of_stock:
         lines.append("\n**Out of Stock:**")
-        for name, dosage, rx, stock, price in out_of_stock:
-            rx_flag = "Rx required" if rx else "OTC"
-            lines.append(f"• {name.title()} | {dosage} | {rx_flag}")
+        for name, active_ingredients, dosage, dosage_form, rx, controlled, stock, price in out_of_stock:
+            rx_flag = "⚠️ Rx (Controlled)" if controlled else ("⚠️ Rx" if rx else "OTC")
+            dosage_str = f"{dosage} " if dosage else ""
+            lines.append(f"• {name.title()} | {active_ingredients} | {dosage_str}{dosage_form} | {rx_flag}")
     return "\n".join(lines)
 
 
@@ -345,7 +364,8 @@ def suggest_alternatives(ctx: RunContext[PharmacyDeps], product_name: str) -> st
 
     cursor.execute(
         """
-        SELECT product_name, dosage, requires_prescription, stock, price
+        SELECT product_name, active_ingredients, dosage, dosage_form,
+               requires_prescription, is_controlled, stock, price
         FROM inventory
         WHERE category = ? AND product_name != ? AND stock > 0
         ORDER BY price ASC
@@ -364,10 +384,12 @@ def suggest_alternatives(ctx: RunContext[PharmacyDeps], product_name: str) -> st
         f"{product_name.title()} is out of stock. "
         f"Here are in-stock alternatives in the '{category}' category:"
     ]
-    for alt_name, dosage, rx, alt_stock, price in alternatives:
-        rx_flag = "Rx required" if rx else "OTC"
+    for alt_name, active_ingredients, dosage, dosage_form, rx, controlled, alt_stock, price in alternatives:
+        rx_flag = "⚠️ Rx (Controlled)" if controlled else ("⚠️ Rx" if rx else "OTC")
+        dosage_str = f"{dosage} " if dosage else ""
         lines.append(
-            f"• {alt_name.title()} | {dosage} | {rx_flag} | {alt_stock} units | GH\u20b5{price:.2f}"
+            f"• {alt_name.title()} | {active_ingredients} | {dosage_str}{dosage_form} | "
+            f"{rx_flag} | {alt_stock} units | GH\u20b5{price:.2f}"
         )
     return "\n".join(lines)
 
