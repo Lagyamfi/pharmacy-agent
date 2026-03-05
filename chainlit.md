@@ -1,14 +1,26 @@
-# Welcome to Chainlit! 🚀🤖
+# Pharmacy Support Agent
 
-Hi there, Developer! 👋 We're excited to have you on board. Chainlit is a powerful tool designed to help you prototype, debug and share applications built on top of LLMs.
+Welcome! This AI-powered pharmacy assistant runs in two modes — switch between them via the **Chat Settings** panel (gear icon).
 
-## Useful Links 🔗
+## Modes
 
-- **Documentation:** Get started with our comprehensive [Chainlit Documentation](https://docs.chainlit.io) 📚
-- **Discord Community:** Join our friendly [Chainlit Discord](https://discord.gg/k73SQ3FyUh) to ask questions, share your projects, and connect with other developers! 💬
+| Mode | Description |
+|---|---|
+| **Customer Support** | Ask about order status, product availability, FDA drug warnings, drug interactions, and invoicing |
+| **Admin Analyst** | Pose natural-language questions that are converted to SQL and run against the pharmacy database |
 
-We can't wait to see what you create with Chainlit! Happy coding! 💻😊
+## Quick Examples
 
-## Welcome screen
+**Customer Support:**
+- *"What's the status of order ORD-101?"*
+- *"Is ibuprofen in stock?"*
+- *"Can I take ibuprofen and aspirin together?"*
+- *"What are the FDA warnings for melatonin?"*
 
-To modify the welcome screen, edit the `chainlit.md` file at the root of your project. If you do not want a welcome screen, just leave this file empty.
+**Admin Analyst:**
+- *"How many orders are there per status?"*
+- *"Which products are out of stock?"*
+
+## Voice Mode
+
+Click the **microphone** button to speak your question. The agent will transcribe your speech (via Gemini STT) and respond with both text and audio (via gTTS).

@@ -4,10 +4,16 @@ These are registered with the pydantic-ai Agent so the LLM can
 invoke them through function calling.
 """
 
+import datetime
 import json
+import os
+import tempfile
+
+import chainlit as cl
 import requests
 import sqlite3
 from dataclasses import dataclass
+from fpdf import FPDF
 from pydantic_ai import RunContext
 
 # 1. Define the Dependency object that holds our database connection
@@ -73,7 +79,10 @@ def check_inventory(ctx: RunContext[PharmacyDeps], product_name: str) -> str:
     cursor = ctx.deps.db_conn.cursor()
     
     # Securely query the SQLite database
-    cursor.execute("SELECT stock FROM inventory WHERE product_name = ?", (name,))
+    cursor.execute(
+        "SELECT stock, dosage, category, requires_prescription FROM inventory WHERE product_name = ?",
+        (name,),
+    )
     result = cursor.fetchone()
 
     if result is None:
@@ -82,18 +91,33 @@ def check_inventory(ctx: RunContext[PharmacyDeps], product_name: str) -> str:
             "Please check the product name and try again."
         )
 
-    stock = result[0]
+    stock, dosage, category, requires_prescription = result
     if stock == 0:
         return f"{product_name.title()} is currently out of stock."
 
-    return f"{product_name.title()} is in stock with {stock} units available."
+    rx_line = (
+        "⚠️ PRESCRIPTION REQUIRED — a valid prescription must be presented before dispensing."
+        if requires_prescription
+        else "OTC (no prescription required)"
+    )
+    return (
+        f"{product_name.title()} is in stock — {stock} units available.\n"
+        f"Dosage: {dosage} | Category: {category} | {rx_line}"
+    )
 
 
 # 4. No context needed here, it just hits the internet!
 def get_fda_warnings(drug_name: str) -> str:
-    """
-    Use this when a customer asks about the side effects, risks, or FDA warnings 
+    """Fetch official FDA boxed warnings for a specific medication.
+
+    Use this when a customer asks about the side effects, risks, or FDA warnings
     of a specific medication.
+
+    Args:
+        drug_name: The name of the drug, e.g. "ibuprofen".
+
+    Returns:
+        A string with the FDA boxed warning text, or a not-found message.
     """
     url = f"https://api.fda.gov/drug/label.json?search=openfda.generic_name:\"{drug_name}\"&limit=1"
     
@@ -165,8 +189,6 @@ def prepare_order_cancellation(
         A JSON string indicating whether cancellation is ready
         or an error message explaining why it cannot be cancelled.
     """
-    import json
-
     cursor = ctx.deps.db_conn.cursor()
     cursor.execute(
         "SELECT order_id, status, items FROM orders WHERE order_id = ?",
@@ -199,6 +221,198 @@ def prepare_order_cancellation(
     })
 
 
+def search_inventory(ctx: RunContext[PharmacyDeps], query: str) -> str:
+    """Search for products by partial name or brand name.
+
+    Use this when a customer mentions a brand name, misspells a drug, or
+    provides only a partial product name.
+
+    Args:
+        query: Partial or full product name to search for, e.g. "augmentin".
+
+    Returns:
+        A formatted list of matching products or a not-found message.
+    """
+    cursor = ctx.deps.db_conn.cursor()
+    cursor.execute(
+        """
+        SELECT product_name, dosage, category, requires_prescription, stock, price
+        FROM inventory
+        WHERE product_name LIKE ?
+        ORDER BY stock DESC
+        LIMIT 6
+        """,
+        (f"%{query.lower()}%",),
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        return (
+            f"No products found matching '{query}'. "
+            "Try searching by a generic name or browse by category."
+        )
+
+    lines = [f"Search results for '{query}':"]
+    for name, dosage, category, rx, stock, price in rows:
+        rx_flag = "Rx required" if rx else "OTC"
+        stock_str = f"{stock} units" if stock > 0 else "OUT OF STOCK"
+        lines.append(
+            f"• {name.title()} | {dosage} | {category} | {rx_flag} | "
+            f"{stock_str} | GH\u20b5{price:.2f}"
+        )
+    return "\n".join(lines)
+
+
+def get_drugs_by_category(ctx: RunContext[PharmacyDeps], category: str) -> str:
+    """Browse all products in a drug category or therapeutic class.
+
+    Use this when a customer asks what you carry for a condition or drug class,
+    e.g. "malaria drugs", "blood pressure medications", "pain relief".
+
+    Args:
+        category: The drug category to browse, e.g. "Analgesic", "Antimalarial".
+
+    Returns:
+        A formatted listing of products in the category, grouped by availability.
+    """
+    cursor = ctx.deps.db_conn.cursor()
+    cursor.execute(
+        """
+        SELECT product_name, dosage, requires_prescription, stock, price
+        FROM inventory
+        WHERE LOWER(category) = LOWER(?)
+        ORDER BY stock DESC
+        """,
+        (category,),
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        cursor.execute("SELECT DISTINCT category FROM inventory ORDER BY category")
+        categories = [r[0] for r in cursor.fetchall()]
+        return (
+            f"No products found in the '{category}' category. "
+            f"Available categories: {', '.join(categories)}."
+        )
+
+    in_stock = [(n, d, rx, s, p) for n, d, rx, s, p in rows if s > 0]
+    out_of_stock = [(n, d, rx, s, p) for n, d, rx, s, p in rows if s == 0]
+
+    lines = [f"Products in '{category}' category:"]
+    if in_stock:
+        lines.append("\n**In Stock:**")
+        for name, dosage, rx, stock, price in in_stock:
+            rx_flag = "Rx required" if rx else "OTC"
+            lines.append(
+                f"• {name.title()} | {dosage} | {rx_flag} | {stock} units | GH\u20b5{price:.2f}"
+            )
+    if out_of_stock:
+        lines.append("\n**Out of Stock:**")
+        for name, dosage, rx, stock, price in out_of_stock:
+            rx_flag = "Rx required" if rx else "OTC"
+            lines.append(f"• {name.title()} | {dosage} | {rx_flag}")
+    return "\n".join(lines)
+
+
+def suggest_alternatives(ctx: RunContext[PharmacyDeps], product_name: str) -> str:
+    """Suggest in-stock alternatives when a product is out of stock.
+
+    Use this proactively when a product is out of stock to offer drugs in the
+    same therapeutic class before ending your response.
+
+    Args:
+        product_name: The name of the product to find alternatives for, e.g. "amoxicillin".
+
+    Returns:
+        A formatted list of in-stock alternatives, or a message if none exist.
+    """
+    name = product_name.lower().strip()
+    cursor = ctx.deps.db_conn.cursor()
+    cursor.execute(
+        "SELECT category, stock FROM inventory WHERE product_name = ?", (name,)
+    )
+    row = cursor.fetchone()
+
+    if row is None:
+        return f"Product '{product_name}' not found in our inventory."
+
+    category, stock = row
+    if stock > 0:
+        return (
+            f"{product_name.title()} is currently in stock ({stock} units available) — "
+            "no substitution needed."
+        )
+
+    cursor.execute(
+        """
+        SELECT product_name, dosage, requires_prescription, stock, price
+        FROM inventory
+        WHERE category = ? AND product_name != ? AND stock > 0
+        ORDER BY price ASC
+        """,
+        (category, name),
+    )
+    alternatives = cursor.fetchall()
+
+    if not alternatives:
+        return (
+            f"{product_name.title()} is currently out of stock and we have no "
+            f"in-stock alternatives in the '{category}' category at this time."
+        )
+
+    lines = [
+        f"{product_name.title()} is out of stock. "
+        f"Here are in-stock alternatives in the '{category}' category:"
+    ]
+    for alt_name, dosage, rx, alt_stock, price in alternatives:
+        rx_flag = "Rx required" if rx else "OTC"
+        lines.append(
+            f"• {alt_name.title()} | {dosage} | {rx_flag} | {alt_stock} units | GH\u20b5{price:.2f}"
+        )
+    return "\n".join(lines)
+
+
+def get_customer_orders(ctx: RunContext[PharmacyDeps], customer_name: str) -> str:
+    """Look up all orders associated with a customer name.
+
+    Use this when a customer asks about their order history or past purchases
+    by name. Do not ask for an order ID in this case.
+
+    Args:
+        customer_name: Full or partial customer name, e.g. "Kwame Asante".
+
+    Returns:
+        A formatted summary of all matching orders, or a not-found message.
+    """
+    cursor = ctx.deps.db_conn.cursor()
+    cursor.execute(
+        """
+        SELECT order_id, status, expected_delivery, items
+        FROM orders
+        WHERE LOWER(customer_name) LIKE LOWER(?)
+        ORDER BY order_id DESC
+        """,
+        (f"%{customer_name}%",),
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        return (
+            f"No orders found for '{customer_name}'. "
+            "Please confirm the name as registered with us."
+        )
+
+    lines = [f"Orders for '{customer_name}':"]
+    for order_id, status, delivery, items_json in rows:
+        items = json.loads(items_json)
+        delivery_str = delivery or "N/A (cancelled)"
+        lines.append(
+            f"\n• {order_id} — {status} | Expected: {delivery_str}"
+            f"\n  Items: {', '.join(items)}"
+        )
+    return "\n".join(lines)
+
+
 def generate_invoice(
     ctx: RunContext[PharmacyDeps], items: dict[str, int]
 ) -> str:
@@ -215,12 +429,6 @@ def generate_invoice(
         A Markdown formatted table summarizing the invoice. 
         The actual PDF file will be attached to the chat automatically.
     """
-    import os
-    import tempfile
-    import datetime
-    import chainlit as cl
-    from fpdf import FPDF
-    
     cursor = ctx.deps.db_conn.cursor()
     
     line_items = []

@@ -10,6 +10,7 @@ import base64
 import io
 import json
 import os
+import re
 import sqlite3
 
 import chainlit as cl
@@ -42,6 +43,13 @@ def get_db_connection() -> sqlite3.Connection:
     return sqlite3.connect("pharmacy.db", check_same_thread=False)
 
 
+# MIME types accepted as prescription uploads
+PRESCRIPTION_MIME_TYPES = {
+    "image/png", "image/jpeg", "image/webp",
+    "image/gif", "application/pdf",
+}
+
+
 # ─── TTS Helper ────────────────────────────────────────────────────
 def text_to_speech(text: str) -> bytes:
     """Convert text to MP3 audio bytes using gTTS."""
@@ -52,6 +60,48 @@ def text_to_speech(text: str) -> bytes:
     tts.write_to_fp(buf)
     buf.seek(0)
     return buf.read()
+
+
+async def extract_prescription(file_path: str, mime_type: str) -> list[dict]:
+    """Read a prescription image/PDF with Gemini Vision and extract medications.
+
+    Args:
+        file_path: Absolute path to the uploaded file (written by Chainlit).
+        mime_type: MIME type of the file, e.g. "image/jpeg".
+
+    Returns:
+        List of dicts: [{"name": "ibuprofen", "dosage": "400mg", "quantity": 30}, ...]
+        Returns an empty list if no prescription is detected.
+    """
+    with open(file_path, "rb") as f:
+        file_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    response = await gemini_client.aio.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            {"inline_data": {"mime_type": mime_type, "data": file_b64}},
+            (
+                "This is a pharmacy prescription. Extract every medication listed. "
+                "Return ONLY valid JSON — no explanation, no markdown fences:\n"
+                '{"medications": [{"name": "lowercase_drug_name", '
+                '"dosage": "Xmg", "quantity": N}]}\n'
+                "If no prescription is visible, return: {\"medications\": []}"
+            ),
+        ],
+    )
+
+    raw = (response.text or "").strip()
+    # Strip markdown code fences Gemini sometimes adds
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    try:
+        return json.loads(raw).get("medications", [])
+    except (json.JSONDecodeError, AttributeError):
+        return []
 
 
 # ─── Persona-Aware Starters ───────────────────────────────────────
@@ -71,6 +121,10 @@ CUSTOMER_STARTERS = [
     cl.Starter(
         label="📋 FDA warnings",
         message="What are the FDA warnings for ibuprofen?",
+    ),
+    cl.Starter(
+        label="💊 Upload prescription",
+        message="I'd like to order the medications from my prescription.",
     ),
 ]
 
@@ -180,8 +234,6 @@ def _extract_cancellation_order_id(text: str) -> str | None:
     Only triggers for positive eligibility — NOT for rejections like
     'cannot be cancelled' or 'already delivered'.
     """
-    import re
-
     lower = text.lower()
 
     # Reject: the agent is telling the user the order CANNOT be cancelled
@@ -295,8 +347,60 @@ async def on_settings_update(settings):
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Handle text messages (keyboard input)."""
-    await process_query(message.content)
+    """Handle text messages and prescription file uploads."""
+    # Detect prescription attachments (image or PDF)
+    rx_files = [
+        elem for elem in (message.elements or [])
+        if hasattr(elem, "mime") and elem.mime in PRESCRIPTION_MIME_TYPES
+    ]
+
+    if not rx_files:
+        await process_query(message.content)
+        return
+
+    # ── Prescription upload path ───────────────────────────────────────
+    loading = cl.Message(content="📋 Reading your prescription...")
+    await loading.send()
+
+    try:
+        medications = await extract_prescription(rx_files[0].path, rx_files[0].mime)
+    except Exception as e:
+        await loading.remove()
+        await cl.Message(
+            content=f"⚠️ Could not read the prescription: {str(e)}. "
+                    "Please try a clearer image or type your medications manually."
+        ).send()
+        return
+
+    if not medications:
+        await loading.remove()
+        await cl.Message(
+            content="⚠️ I couldn't find any medications in that image. "
+                    "Please try a clearer photo or describe what you need."
+        ).send()
+        return
+
+    # Show a preview of what was extracted
+    med_lines = "\n".join(
+        f"- **{m['name'].title()}** {m.get('dosage', '')} × {m.get('quantity', 1)}"
+        for m in medications
+    )
+    await loading.remove()
+    await cl.Message(
+        content=f"📋 Found in your prescription:\n{med_lines}\n\n"
+                "Let me check availability and prepare your invoice."
+    ).send()
+
+    # Build the agent query from the extracted list
+    items_desc = ", ".join(
+        f"{m['name']} x{m.get('quantity', 1)}" for m in medications
+    )
+    agent_query = (
+        f"The customer uploaded a prescription. Extracted medications: {items_desc}. "
+        f"Customer note: '{message.content or 'Please process my prescription'}'. "
+        "Check inventory for each item then, once confirmed, generate the invoice."
+    )
+    await process_query(agent_query)
 
 
 # ─── Audio Lifecycle (Voice Mode) ─────────────────────────────────

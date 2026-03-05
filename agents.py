@@ -17,6 +17,10 @@ from tools import (
     check_drug_interactions,
     prepare_order_cancellation,
     generate_invoice,
+    search_inventory,
+    get_drugs_by_category,
+    suggest_alternatives,
+    get_customer_orders,
 )
 
 # ─── Support Agent ─────────────────────────────────────────────────
@@ -36,7 +40,12 @@ RULES:
 3. Be concise, professional, and friendly.
 4. When a user requests to buy items or asks for an invoice, ALWAYS use the generate_invoice tool to calculate totals and create a PDF.
 5. All prices are in GHS (Ghanaian Cedi).
-6. Before calling generate_invoice, ALWAYS confirm the final list of items and their quantities with the user.\
+6. Before calling generate_invoice, ALWAYS confirm the final list of items and their quantities with the user.
+7. When you receive a message containing "Extracted medications:" from a prescription upload, call check_inventory for each item, report availability, and then call generate_invoice once the customer confirms. Do not ask for the list again — it is already provided.
+8. If check_inventory (or any tool) indicates requires_prescription=1 or "PRESCRIPTION REQUIRED", ALWAYS inform the customer they must present a valid prescription before the item can be dispensed. Never skip this warning.
+9. When a customer asks what you carry for a condition or drug class (e.g. "malaria drugs", "blood pressure medications"), use get_drugs_by_category.
+10. When a product is out of stock, proactively call suggest_alternatives to offer drugs in the same therapeutic class before ending your response.
+11. When a customer asks about their order history or past purchases by name, use get_customer_orders. Do not ask for an order ID in this case.\
 """,
 )
 
@@ -46,6 +55,10 @@ support_agent.tool_plain(get_fda_warnings)
 support_agent.tool_plain(check_drug_interactions)
 support_agent.tool(prepare_order_cancellation)
 support_agent.tool(generate_invoice)
+support_agent.tool(search_inventory)
+support_agent.tool(get_drugs_by_category)
+support_agent.tool(suggest_alternatives)
+support_agent.tool(get_customer_orders)
 
 
 # ─── Pharmacist Agent ──────────────────────────────────────────────
@@ -76,7 +89,7 @@ STRICT GUARDRAILS:
 triage_agent = Agent(
     "google-gla:gemini-2.5-flash",
     deps_type=PharmacyDeps,
-    system_prompt="""\
+    instructions="""\
 You are the front-desk triage assistant for an online pharmacy.
 Your ONLY job is to route customer queries to the right specialist
 using your tools and relay their response.
@@ -87,6 +100,10 @@ ROUTING RULES:
 - FDA warnings, drug interactions → use ask_support_agent
 - Drug information, medication questions, how a drug works,
   side effects education, wellness → use ask_pharmacist_agent
+- "What do you have for [condition]?", category browsing → use ask_support_agent
+- Order history by customer name → use ask_support_agent
+- Searching for a drug by partial name or brand name → use ask_support_agent
+- Alternatives / substitutions for an out-of-stock drug → use ask_support_agent
 - If the query is a simple greeting, respond directly with a brief,
   friendly welcome.
 
@@ -137,14 +154,24 @@ async def ask_pharmacist_agent(customer_query: str) -> str:
 
 DB_SCHEMA = """\
 TABLE: orders
-  - order_id     TEXT PRIMARY KEY   (e.g. "ORD-101")
-  - status       TEXT NOT NULL      (Shipped | Processing | Delivered | Cancelled)
-  - expected_delivery TEXT          (date string or NULL if cancelled)
-  - items        TEXT NOT NULL      (JSON array of item strings)
+  - order_id          TEXT PRIMARY KEY   (e.g. "ORD-101")
+  - customer_name     TEXT NOT NULL      (e.g. "Kwame Asante")
+  - status            TEXT NOT NULL      (Shipped | Processing | Delivered | Cancelled)
+  - expected_delivery TEXT               (ISO date string or NULL if cancelled)
+  - items             TEXT NOT NULL      (JSON array of item strings)
 
 TABLE: inventory
-  - product_name TEXT PRIMARY KEY   (lowercase, e.g. "ibuprofen")
-  - stock        INTEGER NOT NULL   (0 = out of stock)
+  - product_name          TEXT PRIMARY KEY   (lowercase, e.g. "ibuprofen")
+  - dosage                TEXT NOT NULL      (e.g. "500mg tablet", "100ml syrup")
+  - category              TEXT NOT NULL      (e.g. "Analgesic", "Antibiotic", "Antimalarial",
+                                              "Antihypertensive", "Vitamin/Supplement",
+                                              "Antacid/GI", "Respiratory", "Antidiabetic",
+                                              "Dermatology", "Antifungal", "Ophthalmic",
+                                              "Corticosteroid", "Cardiac", "Antiparasitic",
+                                              "Sleep Aid", "Antihistamine", "Hygiene", "Supplies")
+  - requires_prescription INTEGER NOT NULL   (1 = prescription required, 0 = OTC)
+  - stock                 INTEGER NOT NULL   (0 = out of stock)
+  - price                 REAL NOT NULL      (price in GHS)
 """
 
 # Regex to detect non-SELECT statements
@@ -156,7 +183,7 @@ _UNSAFE_SQL_PATTERN = re.compile(
 sql_agent = Agent(
     "google-gla:gemini-2.5-flash",
     deps_type=PharmacyDeps,
-    system_prompt=f"""\
+    instructions=f"""\
 You are an expert SQL analyst for an online pharmacy's database.
 Your job is to convert natural language questions into SQL queries
 and execute them to provide answers.

@@ -1,3 +1,10 @@
+> **Note:** This is the original POC brief written before implementation began. It is historical
+> and superseded by the current implementation. Key divergences: the app uses Chainlit (not
+> Streamlit), SQLite (not in-memory dicts), Python 3.13, Gemini 2.5 Flash exclusively, and a
+> multi-agent architecture with voice I/O, HITL cancellation, and PDF invoicing.
+
+---
+
 # Project Specification: E-Commerce Pharmacy AI Agent (POC)
 
 ## 1. Project Overview
@@ -67,7 +74,7 @@ The LLM must be provided with these two explicit tools:
 The LLM must be initialized with the following system instructions:
 
 > "You are a helpful, professional customer support assistant for an online e-commerce pharmacy.
-> 
+>
 > **CRITICAL GUARDRAILS:**
 > 1. **NO MEDICAL ADVICE:** You are NOT a doctor. If a user asks for diagnoses, symptom checking, or medical advice (e.g., 'What should I take for a rash?'), you MUST decline and advise them to consult a healthcare professional. You may only provide factual, publicly available information about over-the-counter products if asked generally.
 > 2. **TOOL USAGE:** Always use your provided tools to look up specific order statuses or inventory. Never guess or hallucinate stock levels or order updates.

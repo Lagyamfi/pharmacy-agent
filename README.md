@@ -33,7 +33,7 @@ An AI-powered **multi-agent** customer support chatbot for an online pharmacy. F
 - **Drug Interaction Checker** — Check potential interactions between two medications via the openFDA API
 - **FDA Drug Warnings** — Fetch official FDA boxed warnings for specific medications
 - **Medical Safety Guardrails** — Declines medical advice requests and directs users to healthcare professionals
-- **Voice Mode** — Speak questions via microphone (Whisper STT) and hear answers read aloud (gTTS)
+- **Voice Mode** — Speak questions via microphone (Gemini STT) and hear answers read aloud (gTTS)
 - **Automated Invoicing** — Dynamically calculates totals (in GHS) and generates a downloadable PDF attached inline to the chat
 - **SQL Safety Guardrails** — Admin queries restricted to SELECT-only, blocking all write operations
 - **Observability** — Full tracing of agent runs, tool calls, and SQLite queries via Logfire
@@ -69,13 +69,19 @@ flowchart LR
 
 ```
 pharmacy-agent/
-├── app.py            # Chainlit UI, persona toggle, streaming, starters
 ├── agents.py         # Multi-agent definitions (triage, support, pharmacist, SQL)
-├── tools.py          # Tool functions & PharmacyDeps dependency class
+├── app.py            # Chainlit UI, persona toggle, streaming, starters
 ├── init_db.py        # Database initialisation & seed data script
-├── .env              # API key (not committed)
+├── tools.py          # Tool functions & PharmacyDeps dependency class
+├── docs/
+│   ├── demo.png
+│   └── original-spec.md  # Original POC brief (historical)
+├── tests/
+│   ├── test_tools.py
+│   └── test_app.py
+├── .env.example      # Template — copy to .env and fill in your key
 ├── pyproject.toml    # Project config & dependencies
-└── spec.md           # Original specification
+└── README.md
 ```
 
 ## Quick Start
@@ -96,7 +102,8 @@ pharmacy-agent/
 
 2. **Configure your API key**
    ```bash
-   echo "GOOGLE_API_KEY=your-gemini-key" > .env
+   cp .env.example .env
+   # Then edit .env and replace the placeholder with your actual key
    ```
 
 3. **Initialise the database**

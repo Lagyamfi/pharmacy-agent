@@ -7,5 +7,5 @@ __pycache__/
 .git/
 .logfire/
 pharmacy.db
-# Ignore chainlit local data if any
-.chainlit/
+# Keep .chainlit/config.toml (theme + audio settings), exclude generated cache
+.chainlit/translations/
